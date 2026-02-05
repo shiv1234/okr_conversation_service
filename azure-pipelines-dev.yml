@@ -1,0 +1,146 @@
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- DEV
+
+resources:
+- repo: self
+
+variables:
+ - group: unlockokr-dev
+ - group: unlockokr-shared
+ - name: dockerRegistryServiceConnection
+   value: '8d6d93e6-ac7b-4759-988c-192718fc4c3b'
+ - name: imageRepository
+   value: 'okrconversationservice'
+ - name: containerRegistry
+   value: 'unlockokrregistrydev.azurecr.io'
+ - name: dockerfilePath
+   value: '**/Dockerfile'
+ - name: tag
+   value: '$(Build.BuildId)'
+ - name: imagePullSecret
+   value:  'unlockokrregistrydev20502854-auth'
+ - name: vmImageName
+   value: 'ubuntu-latest'
+  
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    # Manually adding conda to the PATH is a step required by Microsoft
+    - script: |
+       sed -i 's/RESOURCEGROUOP/$(RESOURCEGROUOP)/g' ./Dockerfile
+       echo $BUILD_DEFINITIONNAME
+      displayName: 'Replace envoriment name in Docker file'
+    - task: UseDotNet@2
+      inputs:
+        packageType: 'sdk'
+        version: '3.x'
+        includePreviewVersions: true 
+
+      
+    - task: CmdLine@2
+      displayName: 'dotnet test'
+      inputs:
+       script: |
+        echo Installing sonarScanner tool
+        dotnet tool install --global dotnet-sonarscanner 
+        echo dotnet test
+        dotnet test ./OkrConversationService.Infrastructure.Tests/OkrConversationService.Infrastructure.Tests.csproj /p:CollectCoverage=true  /p:CoverletOutputFormat=opencover
+        dotnet test ./OkrConversationService.Application.Tests/OkrConversationService.Application.Tests.csproj /p:CollectCoverage=true  /p:CoverletOutputFormat=opencover
+        dotnet test ./OkrConversationService.Domain.Tests/OkrConversationService.Domain.Tests.csproj /p:CollectCoverage=true  /p:CoverletOutputFormat=opencover
+        
+    - task: CmdLine@2
+      displayName: 'Install Sonar Tools and Start Scanner'
+      inputs:
+       script: |
+        echo Installing sonarScanner tool
+        dotnet tool install --global dotnet-sonarscanner 
+        echo Start Scanner
+        dotnet-sonarscanner begin /k:"$BUILD_DEFINITIONNAME" /d:sonar.cs.opencover.reportsPaths="**/*opencover.xml" /d:sonar.host.url="https://$SONARHOST" /d:sonar.login="$SONARTOKEN"   
+
+    - task: DotNetCoreCLI@2
+      inputs:
+       command: 'build'
+       projects: '**/*.csproj'
+       
+    - task: CmdLine@2
+      displayName: 'Collect Sonar results and Upload'
+      inputs:
+       script: |
+        echo Run Sonar End
+        dotnet-sonarscanner end /d:sonar.login="$(SONARTOKEN)"  
+        
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          $token = [System.Text.Encoding]::UTF8.GetBytes($env:SONARTOKEN + ":")
+          $base64 = [System.Convert]::ToBase64String($token)
+           
+          $basicAuth = [string]::Format("Basic {0}", $base64)
+          $headers = @{ Authorization = $basicAuth }
+           
+          $result = Invoke-RestMethod -Method Get -Uri https://$env:SONARHOST/api/qualitygates/project_status?projectKey=$env:BUILD_DEFINITIONNAME -Headers $headers
+          $result | ConvertTo-Json | Write-Host
+           
+          if ($result.projectStatus.status -eq "OK") {
+          Write-Host "Quality Gate Succeeded"
+          }else{
+          throw "Quality gate failed"
+          }
+ 
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+
+    - upload: manifests
+      artifact: manifests
+
+- stage: Deploy
+  displayName: Deploy stage
+  dependsOn: Build
+
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'okrconversationservice-7362.unlockokr-api-dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/manifests/dev-deployment.yml
+                $(Pipeline.Workspace)/manifests/dev-service.yml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+

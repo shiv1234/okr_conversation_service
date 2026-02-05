@@ -1,0 +1,31 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: okrconversationservice 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: okrconversationservice
+  template:
+    metadata:
+      labels:
+        app: okrconversationservice 
+    spec:
+      containers:
+        - name: okrconversationservice 
+          image: unlockokrregistryqa.azurecr.io/okrconversationservice
+          ports:
+          - containerPort: 80
+          resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                cpu: 410m
+                memory: 512Mi
+          env:
+          - name: "ASPNETCORE_ENVIRONMENT"
+            value: "QA"
+          - name: "ASPNETCORE_FORWARDEDHEADERS_ENABLED"
+            value: "true"

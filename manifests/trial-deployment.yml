@@ -1,0 +1,24 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: okrconversationservice
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: okrconversationservice
+  template:
+    metadata:
+      labels:
+        app: okrconversationservice
+    spec:
+      containers:
+        - name: okrconversationservice 
+          image: unlockokrregistrytrial.azurecr.io/okrconversationservice
+          ports:
+          - containerPort: 80
+          env:
+          - name: "ASPNETCORE_ENVIRONMENT"
+            value: "Trial"
+          - name: "ASPNETCORE_FORWARDEDHEADERS_ENABLED"
+            value: "true"
